@@ -367,10 +367,13 @@
     );
     if (aspectBtn) {
       aspectBtn.click();
-      await new Promise((r) => setTimeout(r, 400));
-      const option = [...document.querySelectorAll('[role="option"], [role="menuitem"], li')]
-        .find((el) => el.textContent.includes('9:16'));
-      if (option) option.click();
+      await new Promise((r) => setTimeout(r, 500));
+      const label = [...document.querySelectorAll('span')].find(
+        (el) => el.textContent.trim() === '9:16',
+      );
+      if (label) {
+        (label.closest('[class*="radio"]') || label.parentElement).click();
+      }
     }
 
     // Upload reference frame if available
