@@ -29,6 +29,9 @@
   let mirrorPausedByUser = false;
   let lastTapAt = 0;
   let pendingSingleTap = 0;
+  let suppressNextClick = false;
+  let longPressTimer = 0;
+  let longPressActive = false;
 
   // ============================================================
   // Bootstrapping
@@ -485,6 +488,7 @@
 
     // Stage tap handler — single tap = pause/play, double tap = like.
     stage.onclick = (e) => {
+      if (suppressNextClick) { suppressNextClick = false; return; }
       if (!currentVideoEl) return;
       const now = Date.now();
       if (now - lastTapAt < TAP_GAP_MS) {
@@ -530,6 +534,33 @@
       toggleMute();
     };
 
+    // Tap-to-copy on the info row (handle / caption / hashtags / music)
+    shadow.getElementById('v-handle').onclick = (e) => {
+      e.stopPropagation();
+      const t = e.currentTarget.textContent;
+      copyText(t);
+      flashViewerToast(`Copied ${t} · invented by AI`);
+    };
+    shadow.getElementById('v-caption').onclick = (e) => {
+      e.stopPropagation();
+      copyText(e.currentTarget.textContent);
+      flashViewerToast('Copied caption');
+    };
+    shadow.getElementById('v-hashtags').onclick = (e) => {
+      e.stopPropagation();
+      const tag = e.target.closest('.tag');
+      if (tag) {
+        copyText(tag.textContent);
+        flashViewerToast(`Copied ${tag.textContent}`);
+      } else {
+        const all = currentRemix?.hashtags?.map((h) => '#' + h).join(' ') || '';
+        if (all) { copyText(all); flashViewerToast('Copied all hashtags'); }
+      }
+    };
+
+    // Long-press the stage = 2× speed (TikTok native)
+    bindLongPress(stage);
+
     // Sheet close
     shadow.getElementById('sheet-close').onclick = (e) => {
       e.stopPropagation();
@@ -572,6 +603,43 @@
     }
   }
 
+  function bindLongPress(stage) {
+    if (stage.__lpBound) return;
+    stage.__lpBound = true;
+
+    const start = (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      if (longPressTimer) clearTimeout(longPressTimer);
+      longPressActive = false;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = 0;
+        longPressActive = true;
+        if (currentVideoEl) currentVideoEl.playbackRate = 2;
+        stage.classList.add('fast');
+      }, 280);
+    };
+    const end = () => {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = 0; }
+      if (longPressActive) {
+        longPressActive = false;
+        if (currentVideoEl) currentVideoEl.playbackRate = 1;
+        stage.classList.remove('fast');
+        suppressNextClick = true;
+      }
+    };
+
+    stage.addEventListener('mousedown', start);
+    stage.addEventListener('mouseup', end);
+    stage.addEventListener('mouseleave', end);
+    stage.addEventListener('touchstart', start, { passive: true });
+    stage.addEventListener('touchend', end);
+    stage.addEventListener('touchcancel', end);
+  }
+
+  function copyText(text) {
+    try { navigator.clipboard.writeText(text); } catch (_) {}
+  }
+
   function togglePlayback() {
     if (!currentVideoEl) return;
     const stage = shadow.getElementById('stage');
@@ -600,13 +668,18 @@
   function spawnFloatingHeart(clientX, clientY) {
     const layer = shadow.getElementById('hearts-layer');
     if (!layer) return;
-    const stageRect = shadow.getElementById('stage').getBoundingClientRect();
-    const x = (clientX ?? stageRect.left + stageRect.width / 2) - stageRect.left;
-    const y = (clientY ?? stageRect.top + stageRect.height / 2) - stageRect.top;
+    // Hearts are positioned inside hearts-layer, so use ITS rect — not the stage's,
+    // because hearts-layer is centered with width: min(420px, 100vw).
+    const r = layer.getBoundingClientRect();
+    const x = (clientX ?? r.left + r.width / 2) - r.left;
+    const y = (clientY ?? r.top + r.height / 2) - r.top;
+    // Clamp inside the layer so the heart doesn't drift off if the click was outside it.
+    const cx = Math.max(28, Math.min(r.width - 28, x));
+    const cy = Math.max(28, Math.min(r.height - 28, y));
     const h = document.createElement('div');
     h.className = 'fheart';
-    h.style.left = x + 'px';
-    h.style.top = y + 'px';
+    h.style.left = cx + 'px';
+    h.style.top = cy + 'px';
     h.style.setProperty('--rot', (Math.random() * 50 - 25) + 'deg');
     h.innerHTML = `<svg viewBox="0 0 32 32" width="68" height="68"><path d="M16 27s-9-5.7-12.4-11.6C1 10.6 4 5 9 5c3 0 5 2 7 4 2-2 4-4 7-4 5 0 8 5.6 5.4 10.4C25 21.3 16 27 16 27z" fill="#ff0050"/></svg>`;
     layer.appendChild(h);
@@ -1090,6 +1163,31 @@
       transform: scaleX(0);
     }
 
+    /* 2× speed badge (long-press) */
+    #speed-badge {
+      position: absolute;
+      top: 56px; left: 50%;
+      transform: translateX(-50%) translateY(-8px) scale(0.92);
+      background: rgba(0,0,0,0.62);
+      backdrop-filter: blur(8px);
+      color: #fff;
+      padding: 6px 14px; border-radius: 999px;
+      font: 700 13px/1 inherit;
+      letter-spacing: 0.02em;
+      opacity: 0;
+      transition: opacity .15s ease, transform .2s cubic-bezier(0.2, 0.8, 0.25, 1);
+      pointer-events: none;
+      z-index: 11;
+    }
+    #stage.fast ~ #speed-badge {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0) scale(1);
+    }
+
+    /* tappable info row */
+    #v-handle, #v-caption, .tag { cursor: pointer; }
+    #v-handle:active, #v-caption:active, .tag:active { opacity: 0.7; }
+
     /* sheet (for "comments"/notes) */
     #sheet {
       position: absolute; left: 0; right: 0; bottom: 0;
@@ -1151,16 +1249,17 @@
   const SVG_MUSIC = `<svg viewBox="0 0 32 32" width="22" height="22" fill="#fff"><path d="M22 4l-9 2v13.2A4.5 4.5 0 1 0 15 23V11l7-1.6V18.2A4.5 4.5 0 1 0 24 22V4z"/></svg>`;
   const SVG_MUSIC_SMALL = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" opacity=".95"><path d="M11 2l-5 1v8.2A2.4 2.4 0 1 0 7 13V6l3-.6V9.7A2.4 2.4 0 1 0 12 12V2z"/></svg>`;
   const SVG_CLOSE = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 3L13 13M13 3L3 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
-  const SVG_REMIX_STAR = `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity=".7"/></linearGradient></defs>
-    <path d="M12 2 L13.7 8.3 L20 10 L13.7 11.7 L12 18 L10.3 11.7 L4 10 L10.3 8.3 Z" fill="url(#g)"/>
-    <circle cx="18.5" cy="5.5" r="1.6" fill="#fff"/><circle cx="5.5" cy="18.5" r="1.2" fill="#fff" opacity=".85"/>
+  const SVG_SMILEY = `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" fill="#fff"/>
+    <circle cx="8.6" cy="10" r="1.5" fill="#1a1410"/>
+    <circle cx="15.4" cy="10" r="1.5" fill="#1a1410"/>
+    <path d="M7.6 13.6 Q12 18.3 16.4 13.6" stroke="#1a1410" stroke-width="1.7" fill="none" stroke-linecap="round"/>
   </svg>`;
 
   const SHADOW_TEMPLATE = `
     <style>${SHADOW_CSS}</style>
 
-    <button id="launcher" title="Remix with AI">${SVG_REMIX_STAR}<span>Remix</span></button>
+    <button id="launcher" title="Remix with AI">${SVG_SMILEY}<span>Remix</span></button>
 
     <aside id="panel" aria-label="Happy Remixer composer">
       <header class="head">
@@ -1207,6 +1306,7 @@
 
       <div id="overlay-layer"></div>
       <div id="hearts-layer"></div>
+      <div id="speed-badge">2× speed</div>
 
       <button id="viewer-close" aria-label="Close" title="Close (Esc)">${SVG_CLOSE}</button>
       <button id="btn-mute" aria-label="Mute" title="Mute (M)">
