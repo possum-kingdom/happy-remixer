@@ -344,14 +344,25 @@
       });
 
       barStatus.textContent = '✦ Generating on Dreamina…';
-      // Clear status after a bit — generation happens in background tab
-      setTimeout(() => {
-        if (barStatus.textContent.includes('Generating')) {
-          barStatus.textContent = '✦ Running in background tab';
-        }
-      }, 4000);
-      setTimeout(() => { barStatus.textContent = ''; }, 10000);
       toggleRemixBar(false);
+
+      // Listen for status updates from the Dreamina tab via chrome.storage
+      const statusListener = (changes) => {
+        if (changes.dreaminaStatus?.newValue) {
+          const { text, ts } = changes.dreaminaStatus.newValue;
+          if (Date.now() - ts < 60_000) {
+            barStatus.textContent = text;
+            // Clear error/done messages after a delay
+            if (text.startsWith('⚠️') || text.includes('Check Dreamina')) {
+              setTimeout(() => { barStatus.textContent = ''; }, 8000);
+              chrome.storage.onChanged.removeListener(statusListener);
+            }
+          }
+        }
+      };
+      chrome.storage.onChanged.addListener(statusListener);
+      // Stop listening after 2 minutes max
+      setTimeout(() => { chrome.storage.onChanged.removeListener(statusListener); }, 120_000);
     } catch (e) {
       barStatus.textContent = '⚠️ ' + (e.message || 'Failed');
       setTimeout(() => { barStatus.textContent = ''; }, 3000);
@@ -364,6 +375,57 @@
   // inject the prompt + reference image automatically.
   // ============================================================
 
+  // Helper: random delay in [lo, hi] ms — looks more human to Dreamina
+  function humanDelay(lo = 800, hi = 1800) {
+    const ms = lo + Math.random() * (hi - lo);
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  // Report Dreamina progress back to TikTok via storage (TikTok listens)
+  function reportDreaminaStatus(text) {
+    try { chrome.storage.local.set({ dreaminaStatus: { text, ts: Date.now() } }); }
+    catch (_) {}
+  }
+
+  // Find Dreamina's generate button (circular primary btn at bottom-right)
+  function findGenerateBtn() {
+    return (
+      document.querySelector('button.lv-btn.lv-btn-primary.lv-btn-shape-circle') ||
+      document.querySelector('button[class*="btn-primary"][class*="circle"]') ||
+      [...document.querySelectorAll('button')].find(
+        (b) => b.querySelector('svg') && getComputedStyle(b).borderRadius.includes('50'),
+      )
+    );
+  }
+
+  // Check if Dreamina shows an error message after generate
+  function checkDreaminaError() {
+    const errorEl = [...document.querySelectorAll('[class*="error"], [class*="toast"], [class*="message"]')].find(
+      (el) => el.textContent.includes("Couldn't generate") || el.textContent.includes('unusual activity'),
+    );
+    return errorEl ? errorEl.textContent.trim() : null;
+  }
+
+  // Poll for generation result — looks for a video/image result or error
+  async function waitForGenResult(timeoutMs = 30_000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      // Check for error text on page
+      const errText = document.body.innerText;
+      if (errText.includes("Couldn't generate") || errText.includes('unusual activity')) {
+        return { ok: false, error: 'rate-limited' };
+      }
+      // Check for a generated result (video thumbnail, progress bar, etc.)
+      const progress = document.querySelector('[class*="progress"], [class*="generating"], [class*="loading"]');
+      if (progress) return { ok: true, status: 'generating' };
+      // Check for result card with video
+      const resultVideo = document.querySelector('video[src]');
+      if (resultVideo) return { ok: true, status: 'done' };
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    return { ok: false, error: 'timeout' };
+  }
+
   async function initDreamina() {
     if (!location.hostname.endsWith('dreamina.capcut.com')) return;
 
@@ -374,40 +436,51 @@
     } catch (_) { return; }
     if (!data || Date.now() - data.ts > 120_000) return; // stale
 
-    // Clear so we don't re-trigger
+    // Clear so we don't re-trigger on page refresh
     await chrome.storage.local.remove('pendingDreaminaRemix');
+    reportDreaminaStatus('✦ Setting up Dreamina…');
 
     // Wait for the ProseMirror prompt editor to appear
-    const editor = await waitForEl('.tiptap.ProseMirror', 12_000);
-    if (!editor) return;
+    const editor = await waitForEl('.tiptap.ProseMirror', 15_000);
+    if (!editor) { reportDreaminaStatus('⚠️ Dreamina editor not found'); return; }
 
-    // Focus and fill the prompt
+    // Small pause before interacting — let page settle
+    await humanDelay(1200, 2200);
+
+    // Focus and fill the prompt — must trigger real DOM + React events
     editor.focus();
-    // ProseMirror needs real input events, not just textContent assignment
+    await humanDelay(300, 600);
     const sel = window.getSelection();
     sel.selectAllChildren(editor);
     sel.collapseToEnd();
     document.execCommand('insertText', false, data.prompt);
+    // Fire input/change events so Dreamina's React state picks up the text
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: data.prompt }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+    editor.dispatchEvent(new Event('blur', { bubbles: true }));
+    editor.focus();
+    reportDreaminaStatus('✦ Prompt filled…');
 
     // Try to switch aspect ratio to 9:16 for TikTok vertical
-    await new Promise((r) => setTimeout(r, 600));
+    await humanDelay(800, 1400);
     const aspectBtn = [...document.querySelectorAll('button')].find(
       (b) => b.textContent.trim() === '16:9',
     );
     if (aspectBtn) {
       aspectBtn.click();
-      await new Promise((r) => setTimeout(r, 500));
+      await humanDelay(600, 1000);
       const label = [...document.querySelectorAll('span')].find(
         (el) => el.textContent.trim() === '9:16',
       );
       if (label) {
         (label.closest('[class*="radio"]') || label.parentElement).click();
+        await humanDelay(400, 700);
       }
     }
 
     // Upload reference frame if available
     if (data.frame) {
-      await new Promise((r) => setTimeout(r, 500));
+      await humanDelay(600, 1000);
       const fileInput = document.querySelector('input[type="file"]');
       if (fileInput) {
         try {
@@ -419,29 +492,75 @@
           dt.items.add(file);
           fileInput.files = dt.files;
           fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+          reportDreaminaStatus('✦ Reference frame uploaded…');
         } catch (_) {}
       }
     }
 
-    // Auto-click generate if flagged
+    // Auto-click generate with retry logic
     if (data.autoGenerate) {
-      await new Promise((r) => setTimeout(r, 800));
-      // Dreamina's generate button is the circular primary button at bottom-right
-      const genBtn =
-        document.querySelector('button.lv-btn.lv-btn-primary.lv-btn-shape-circle') ||
-        document.querySelector('button[class*="btn-primary"][class*="circle"]') ||
-        [...document.querySelectorAll('button')].find(
-          (b) => b.querySelector('svg') && getComputedStyle(b).borderRadius.includes('50'),
-        );
-      if (genBtn) genBtn.click();
+      // Dreamina may show a consent dialog first — dismiss it
+      await humanDelay(800, 1200);
+      const earlyConfirm = [...document.querySelectorAll('button')].find(
+        (b) => b.textContent.trim() === 'Confirm' || b.textContent.trim() === 'Accept',
+      );
+      if (earlyConfirm) { earlyConfirm.click(); await humanDelay(600, 1000); }
 
-      // Dreamina may show a "Before you continue" consent dialog — auto-confirm
-      await new Promise((r) => setTimeout(r, 1000));
-      const confirmBtn =
-        [...document.querySelectorAll('button')].find(
-          (b) => b.textContent.trim() === 'Confirm',
+      // Try generate up to 2 times with backoff
+      for (let attempt = 0; attempt < 2; attempt++) {
+        // Wait longer before first click — let Dreamina's React state settle
+        await new Promise((r) => setTimeout(r, attempt === 0 ? 3000 : 2000));
+        const genBtn = findGenerateBtn();
+        if (!genBtn) { reportDreaminaStatus('⚠️ Generate button not found'); return; }
+
+        // Make sure the button isn't disabled
+        if (genBtn.disabled || genBtn.getAttribute('aria-disabled') === 'true') {
+          // Re-focus editor and trigger input again to wake up React
+          const ed = document.querySelector('.tiptap.ProseMirror');
+          if (ed) {
+            ed.focus();
+            ed.dispatchEvent(new InputEvent('input', { bubbles: true }));
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+        }
+
+        reportDreaminaStatus(attempt === 0 ? '✦ Generating…' : '✦ Retrying…');
+        genBtn.click();
+        // Also dispatch mousedown/mouseup for stubborn React handlers
+        genBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        genBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+        // Handle possible consent dialog after clicking generate
+        await humanDelay(1200, 2000);
+        const confirmBtn = [...document.querySelectorAll('button')].find(
+          (b) => b.textContent.trim() === 'Confirm' || b.textContent.trim() === 'Accept',
         );
-      if (confirmBtn) confirmBtn.click();
+        if (confirmBtn) { confirmBtn.click(); await humanDelay(800, 1200); }
+
+        // Wait a bit and check for errors
+        await new Promise((r) => setTimeout(r, 3000));
+        const pageText = document.body.innerText;
+        const failed = pageText.includes("Couldn't generate") || pageText.includes('unusual activity');
+
+        if (!failed) {
+          reportDreaminaStatus('✦ Video generating! Check Dreamina when ready.');
+          return; // success — generation kicked off
+        }
+
+        // Failed — if we have a retry left, wait longer before trying again
+        if (attempt === 0) {
+          reportDreaminaStatus('✦ Dreamina busy, retrying in 10s…');
+          await new Promise((r) => setTimeout(r, 10_000));
+          // Click Regenerate if visible
+          const regenBtn = [...document.querySelectorAll('button')].find(
+            (b) => b.textContent.trim() === 'Regenerate',
+          );
+          if (regenBtn) { regenBtn.click(); continue; }
+        }
+      }
+
+      // Both attempts failed
+      reportDreaminaStatus('⚠️ Dreamina rate-limited — try again in a minute');
     }
   }
 

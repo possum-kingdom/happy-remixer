@@ -1,74 +1,90 @@
 # Happy Remixer
 
-Remix any TikTok video with AI. Click **Remix**, type what you want, and Dreamina generates a new video from your prompt — all without leaving TikTok.
+Remix any TikTok video with AI — without leaving TikTok.
 
-## Quick Start
+Click Remix, type what you want (or tap a style preset), press Enter. Dreamina generates a new AI video in a background tab while you keep scrolling.
 
-1. **Download** — clone or download this repo
-2. **Install** — open `chrome://extensions`, turn on **Developer mode** (top-right), click **Load unpacked**, pick the `happy_remixer` folder
-3. **Go to TikTok** — open [tiktok.com](https://www.tiktok.com) and scroll to any video
-4. **Tap Remix** — it's in the action rail on the right (smiley face icon)
-5. **Type or pick a style** — presets like Cinematic, Anime, Retro are one tap
-6. **Hit send** — Dreamina opens with your prompt, a reference frame from the video, and 9:16 aspect ratio already set. Just click generate.
+## Setup (2 minutes)
 
-That's it.
+1. **Clone this repo**
 
-## What It Does
+   ```
+   git clone https://github.com/possum-kingdom/happy-remixer.git
+   ```
 
-When you click Remix on a TikTok video:
+2. **Open Chrome** and go to `chrome://extensions`
 
-- Captures a frame from the video as a reference image
-- Opens [Dreamina](https://dreamina.capcut.com) (ByteDance's free AI video generator)
-- Auto-fills your prompt into Dreamina's editor
-- Uploads the reference frame
-- Sets the aspect ratio to 9:16 (vertical, TikTok format)
-- You just hit the generate button
+3. **Turn on Developer mode** (toggle in the top-right corner)
 
-The whole point is you never have to manually copy-paste prompts or set up Dreamina yourself. One input box, one click.
+4. **Click "Load unpacked"** and select the `happy_remixer` folder you just cloned
 
-## Style Presets
+5. **Sign into Dreamina** — go to [dreamina.capcut.com](https://dreamina.capcut.com) and create a free account (you get 120 free credits, no card needed)
 
-Quick-tap chips above the input bar:
+That's it. You're ready.
 
-| Chip | Prompt |
-|------|--------|
-| Cinematic | Cinematic movie trailer with dramatic lighting |
-| Anime | Anime style animation |
-| Retro | 90s VHS tape with retro effects |
-| Dreamy | Dreamy ethereal slow motion |
-| Dark | Dark and moody thriller scene |
-| Funny | Absurd and exaggerated comedy |
+## How to Use
 
-Or type anything you want.
+1. Go to [tiktok.com](https://www.tiktok.com) and scroll to any video
+2. Click the **Remix** button in the action rail (smiley face icon on the right side)
+3. Pick a style preset or type your own prompt:
+
+   | Preset | What it does |
+   |--------|-------------|
+   | 🎬 Cinematic | Dramatic movie trailer lighting |
+   | ✦ Anime | Anime style animation |
+   | 📼 Retro | 90s VHS tape with tracking lines |
+   | ✨ Dreamy | Ethereal slow motion |
+   | 🖤 Dark | Moody thriller scene |
+   | 😂 Funny | Absurd exaggerated comedy |
+
+4. Hit the send arrow (or press Enter)
+5. **You stay on TikTok.** Dreamina opens in a background tab, auto-fills your prompt, sets 9:16 vertical format, and starts generating
+6. When you're ready, switch to the Dreamina tab to grab your video
 
 ## Requirements
 
-- Chrome (or any Chromium browser — Edge, Brave, Arc, etc.)
-- A free [Dreamina](https://dreamina.capcut.com) account (ByteDance gives you 120 free credits)
+- Chrome, Edge, Brave, Arc, or any Chromium browser
+- A free [Dreamina](https://dreamina.capcut.com) account (120 free credits from ByteDance, no card)
 
-No API keys needed for Dreamina. If you want to use the Claude-powered remix features (text overlays, captions, analysis), add an Anthropic API key in the extension settings.
+No API keys needed. No build step. No dependencies.
 
-## Files
+## Optional: Claude AI Features
 
-```
-content/content.js    Main content script — remix bar, frame capture,
-                      Dreamina auto-fill, native TikTok viewer
-background.js         Service worker — routes Claude API calls
-lib/ai.js             Claude API client (optional features)
-options/              Settings page for API key
-popup/                Toolbar popup
-```
+If you want AI-powered captions, scripts, or remix analysis, add an Anthropic API key:
+
+1. Click the Happy Remixer icon in your toolbar
+2. Go to Settings
+3. Paste your API key from [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+
+This is totally optional — the core Dreamina remix flow works without it.
+
+## How It Works
+
+When you click Remix and hit send:
+
+- Captures a reference frame from the current TikTok video
+- Opens Dreamina in a background tab (you never leave TikTok)
+- Auto-fills your prompt into Dreamina's editor
+- Sets aspect ratio to 9:16 (TikTok vertical)
+- Clicks generate for you
+- If Dreamina errors, it retries automatically after 10 seconds
+
+## Troubleshooting
+
+**Remix button doesn't appear** — Refresh the TikTok page. If it still doesn't show, go to `chrome://extensions`, find Happy Remixer, and click the reload icon.
+
+**Dreamina says "unusual activity"** — You hit Dreamina's rate limit. Wait a minute and try again. The extension retries automatically.
+
+**Prompt fills but nothing generates** — Make sure you're signed into Dreamina. Open [dreamina.capcut.com](https://dreamina.capcut.com) and check you're logged in.
+
+**Dreamina tab opens in the foreground** — This shouldn't happen. If it does, reload the extension from `chrome://extensions`.
 
 ## Privacy
 
-- Your prompt and a single video frame are sent to Dreamina when you click send
-- If you use Claude features, frames go to `api.anthropic.com` with your API key
-- Nothing is stored on any server. The extension only uses `chrome.storage.local`
-- TikTok never sees your API key — all calls go through the background worker
-
-## Development
-
-No build step. Edit a file, hit Reload on the extension card in `chrome://extensions`, refresh the TikTok tab.
+- Your prompt and one video frame go to Dreamina when you click send
+- If you use Claude features, frames go to `api.anthropic.com` with your key
+- Nothing is stored on any server — extension only uses `chrome.storage.local`
+- TikTok never sees your API key
 
 ## License
 
