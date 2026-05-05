@@ -34,11 +34,26 @@
   let longPressActive = false;
 
   // ============================================================
-  // Bootstrapping
+  // Constants (must be above ALL functions to avoid TDZ errors)
   // ============================================================
 
-  function isTikTok() {
-    return /^https?:\/\/(www\.)?tiktok\.com\//.test(location.href);
+  // Supported host sites — TikTok and Dreamina (ByteDance AI video).
+  const SUPPORTED_HOSTS = ['tiktok.com', 'dreamina.capcut.com'];
+
+  // Classic smiley face for the rail button — oval eyes, wide curling
+  // smile, monochrome outline matching TikTok's icon style.
+  const RAIL_SMILEY_SVG = `
+    <svg viewBox="0 0 48 48" fill="none" stroke="currentColor"
+         stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"
+         aria-hidden="true">
+      <circle cx="24" cy="24" r="20"/>
+      <ellipse cx="17.5" cy="19.5" rx="2" ry="2.8" fill="currentColor" stroke="none"/>
+      <ellipse cx="30.5" cy="19.5" rx="2" ry="2.8" fill="currentColor" stroke="none"/>
+      <path d="M14 29 Q24 38 34 29" stroke-width="2.4"/>
+    </svg>
+  `;
+  function isSupportedSite() {
+    return SUPPORTED_HOSTS.some((h) => location.hostname.endsWith(h));
   }
 
   function ensureHost() {
@@ -56,6 +71,9 @@
   function findVideo() {
     // Pick the largest visible video on the page (works on /@user/video/123,
     // /foryou, /explore, profile pages, embeds — any layout with a player).
+    // We accept videos that haven't decoded yet (videoWidth === 0) because
+    // TikTok may not autoplay for logged-out users; the element is still
+    // usable for captureStream / frame capture once playback starts.
     const vids = [...document.querySelectorAll('video')];
     let best = null;
     let bestArea = 0;
@@ -64,8 +82,6 @@
       if (r.width < 160 || r.height < 200) continue;
       // Must be on-screen-ish
       if (r.bottom < 0 || r.top > innerHeight) continue;
-      // Must have decoded
-      if (!v.videoWidth) continue;
       const area = r.width * r.height;
       if (area > bestArea) { best = v; bestArea = area; }
     }
@@ -78,11 +94,16 @@
       if (panelOpen) togglePanel(false);
       if (viewerOpen) closeViewer();
     }
-    if (!isTikTok()) {
+    if (!isSupportedSite()) {
       setLauncherVisible(false);
       return;
     }
     ensureHost();
+
+    // Inject the rail button as soon as TikTok's action rail exists in the
+    // DOM — don't wait for the video to decode.
+    const injected = injectRailButton();
+
     const v = findVideo();
     if (v) {
       // If the source video swapped while the viewer is open (user navigated
@@ -94,17 +115,18 @@
       } else {
         currentVideoEl = v;
       }
-      // Try to inject our button into TikTok's action rail. If it lands,
-      // hide the floating chip; otherwise fall back to the chip.
-      const injected = injectRailButton();
       setLauncherVisible(!injected);
     } else {
-      setLauncherVisible(false);
+      // No decoded video yet — still show the launcher chip as fallback
+      // if the rail injection hasn't landed either.
+      setLauncherVisible(!injected);
     }
   }
 
+  // Defer the first tick so all const declarations (SHADOW_TEMPLATE,
+  // RAIL_SMILEY_SVG, etc.) defined later in this IIFE are initialised.
   setInterval(tick, 800);
-  tick();
+  setTimeout(tick, 0);
 
   // ============================================================
   // Launcher
@@ -121,50 +143,38 @@
   // alongside Like / Comment / Save / Share — so it looks native.
   // ============================================================
 
-  // Outline-style happy face that matches TikTok's monochrome rail glyphs.
-  // Uses currentColor so it inherits whatever the rail buttons use (white on
-  // dark, dark-gray on light).
-  const RAIL_SMILEY_SVG = `
-    <svg viewBox="0 0 48 48" fill="none" stroke="currentColor"
-         stroke-width="3" stroke-linejoin="round" stroke-linecap="round"
-         aria-hidden="true">
-      <circle cx="24" cy="24" r="19"/>
-      <circle cx="17.5" cy="20" r="2.2" fill="currentColor" stroke="none"/>
-      <circle cx="30.5" cy="20" r="2.2" fill="currentColor" stroke="none"/>
-      <path d="M14.5 28 Q24 36 33.5 28"/>
-    </svg>
-  `;
-
   function injectRailButton() {
     if (document.querySelector('[data-happy-remixer-rail]')) return true;
 
     // Probe for the rail by finding any of the standard action icons.
     const probe =
+      document.querySelector('[data-e2e="share-icon"]') ||
       document.querySelector('[data-e2e="like-icon"]') ||
       document.querySelector('[data-e2e="browse-like-icon"]') ||
-      document.querySelector('[data-e2e="share-icon"]') ||
       document.querySelector('[data-e2e="comment-icon"]') ||
       document.querySelector('[data-e2e="browse-comment-icon"]');
     if (!probe) return false;
 
-    // Walk up to the wrapper that contains both the button and its count
-    // ("section"). TikTok's modern layout puts each action in its own div.
-    const innerBtn = probe.closest('button') || probe;
-    const section = innerBtn.parentElement;
-    if (!section || !section.parentElement) return false;
+    // TikTok's FYP layout: <section> holds individual <button> items
+    // directly (span[icon] + strong[count] inside each button).
+    const anchorBtn = probe.closest('button') || probe.closest('div');
+    const rail = anchorBtn?.parentElement;
+    if (!rail) return false;
 
-    // Clone the section so we inherit all of TikTok's CSS classes / spacing.
-    const clone = section.cloneNode(true);
+    // Clone a real action button so we inherit TikTok's CSS classes.
+    const clone = anchorBtn.cloneNode(true);
     clone.setAttribute('data-happy-remixer-rail', 'true');
-    // Strip data-e2e so TikTok's analytics don't pick our button up.
+
+    // Strip TikTok analytics markers.
     clone.querySelectorAll('[data-e2e]').forEach((el) => el.removeAttribute('data-e2e'));
+    clone.removeAttribute('data-e2e');
     clone.querySelectorAll('a').forEach((a) => { a.removeAttribute('href'); a.removeAttribute('target'); });
 
     // Replace the icon glyph with our happy-face.
     const svg = clone.querySelector('svg');
     if (svg) {
-      const w = svg.getAttribute('width') || '32';
-      const h = svg.getAttribute('height') || '32';
+      const w = svg.getAttribute('width') || '24';
+      const h = svg.getAttribute('height') || '24';
       const wrap = document.createElement('span');
       wrap.innerHTML = RAIL_SMILEY_SVG;
       const newSvg = wrap.firstElementChild;
@@ -173,31 +183,32 @@
       svg.replaceWith(newSvg);
     }
 
-    // Replace the count/label with the word "remix".
-    const labelEl =
-      clone.querySelector('strong[data-e2e]') ||
-      clone.querySelector('strong') ||
+    // Replace the count text with "Remix".
+    const labelEl = clone.querySelector('strong') ||
       [...clone.querySelectorAll('span, div')].find(
         (el) => el.children.length === 0 && /\S/.test(el.textContent),
       );
-    if (labelEl) labelEl.textContent = 'remix';
+    if (labelEl) labelEl.textContent = 'Remix';
 
-    // Hijack clicks anywhere inside the cloned section.
+    // Hijack clicks with a satisfying bounce animation.
     const onClick = (e) => {
       e.stopPropagation();
       e.preventDefault();
-      e.stopImmediatePropagation && e.stopImmediatePropagation();
-      togglePanel(!panelOpen);
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      // Bounce animation matching TikTok's like-button pop
+      clone.style.transition = 'transform .15s cubic-bezier(0.2, 0.8, 0.25, 1)';
+      clone.style.transform = 'scale(1.25)';
+      setTimeout(() => { clone.style.transform = 'scale(0.9)'; }, 120);
+      setTimeout(() => { clone.style.transform = 'scale(1)'; }, 220);
+      setTimeout(() => { togglePanel(!panelOpen); }, 180);
     };
     clone.addEventListener('click', onClick, true);
-    clone.querySelectorAll('button, a').forEach((el) => {
-      el.addEventListener('click', onClick, true);
-      el.setAttribute('aria-label', 'Remix this video with AI');
-      el.setAttribute('title', 'Remix with AI');
-    });
+    clone.setAttribute('aria-label', 'Remix this video with AI');
+    clone.setAttribute('title', 'Remix with AI');
+    clone.style.cursor = 'pointer';
 
-    // Insert right after the anchor's section.
-    section.parentElement.insertBefore(clone, section.nextSibling);
+    // Insert after the last action button in the rail.
+    rail.appendChild(clone);
     return true;
   }
 

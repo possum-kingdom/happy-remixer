@@ -6,6 +6,7 @@
   "permissions": ["storage", "activeTab", "scripting", "downloads"],
   "host_permissions": [
     "https://www.tiktok.com/*",
+    "https://dreamina.capcut.com/*",
     "https://api.anthropic.com/*"
   ],
   "background": {
@@ -24,7 +25,7 @@
   "options_page": "options/options.html",
   "content_scripts": [
     {
-      "matches": ["https://www.tiktok.com/*"],
+      "matches": ["https://www.tiktok.com/*", "https://dreamina.capcut.com/*"],
       "js": ["content/content.js"],
       "run_at": "document_idle"
     }
@@ -32,7 +33,7 @@
   "web_accessible_resources": [
     {
       "resources": ["lib/*", "icons/*"],
-      "matches": ["https://www.tiktok.com/*"]
+      "matches": ["https://www.tiktok.com/*", "https://dreamina.capcut.com/*"]
     }
   ],
   "icons": {

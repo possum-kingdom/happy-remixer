@@ -40,9 +40,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
-// First-run: open the options page so users add their API key.
+// First-run: badge the toolbar icon so the user knows to add a key.
+// DON'T auto-open the options page — it's jarring.
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
-    chrome.runtime.openOptionsPage();
+    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeBackgroundColor({ color: '#ff0050' });
   }
 });
