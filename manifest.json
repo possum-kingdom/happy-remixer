@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Happy Remixer",
+  "version": "0.1.0",
+  "description": "Remix TikTok videos with AI — like a native app, right inside your browser.",
+  "permissions": ["storage", "activeTab", "scripting", "downloads"],
+  "host_permissions": [
+    "https://www.tiktok.com/*",
+    "https://api.anthropic.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Happy Remixer",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "options/options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://www.tiktok.com/*"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/*", "icons/*"],
+      "matches": ["https://www.tiktok.com/*"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
