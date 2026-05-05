@@ -250,10 +250,14 @@
     const remixInput = shadow.getElementById('remix-input');
     const remixGo = shadow.getElementById('remix-go');
     remixGo.addEventListener('click', () => sendToDreamina(remixInput.value));
-    remixInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); sendToDreamina(remixInput.value); }
-      if (e.key === 'Escape') toggleRemixBar(false);
-    });
+    // Stop ALL keyboard events from reaching TikTok (it scrolls videos on keypress)
+    for (const evt of ['keydown', 'keyup', 'keypress']) {
+      remixInput.addEventListener(evt, (e) => {
+        e.stopPropagation();
+        if (evt === 'keydown' && e.key === 'Enter') { e.preventDefault(); sendToDreamina(remixInput.value); }
+        if (evt === 'keydown' && e.key === 'Escape') toggleRemixBar(false);
+      });
+    }
 
     // Preset chips in the remix bar — quick prompts for Dreamina
     shadow.querySelectorAll('[data-bar-preset]').forEach((el) => {
