@@ -1,91 +1,74 @@
 # Happy Remixer
 
-A Chrome extension that lets you remix TikTok videos with AI — and the result plays back as a native-feeling TikTok video, right inside your browser.
+Remix any TikTok video with AI. Click **Remix**, type what you want, and Dreamina generates a new video from your prompt — all without leaving TikTok.
 
-Open any TikTok video, tap the floating **Remix** chip, type a prompt or pick a preset (captions, remix concept, edit ideas, hashtags, voiceover, analyze). Sampled frames are sent to Claude. The response opens in a fullscreen viewer that mirrors your video and renders the remix natively — handle, caption, hashtags, and music attribution bottom-left, action rail (like / notes / re-remix / save / sound) on the right, and timed text overlays animating word-by-word over the video.
+## Quick Start
 
-![preview](icons/icon128.png)
+1. **Download** — clone or download this repo
+2. **Install** — open `chrome://extensions`, turn on **Developer mode** (top-right), click **Load unpacked**, pick the `happy_remixer` folder
+3. **Go to TikTok** — open [tiktok.com](https://www.tiktok.com) and scroll to any video
+4. **Tap Remix** — it's in the action rail on the right (smiley face icon)
+5. **Type or pick a style** — presets like Cinematic, Anime, Retro are one tap
+6. **Hit send** — Dreamina opens with your prompt, a reference frame from the video, and 9:16 aspect ratio already set. Just click generate.
 
-## Features
+That's it.
 
-- 🎬 **Native TikTok-style viewer** — fullscreen black, mirrored 9:16 video, action rail on the right, info bottom-left. Tap to pause/play, ESC to close.
-- ✨ **Animated overlays** — Claude returns a list of timed text overlays. They pop in word-by-word, synced to the video timeline.
-- 🪞 **Live mirroring** — uses `HTMLVideoElement.captureStream()` to mirror the playing TikTok video into the viewer with no re-download.
-- 🧠 **Structured AI output** — Claude returns a strict JSON object (`handle`, `caption`, `hashtags`, `music`, `overlays[]`, `summary`) so the viewer can render it directly. Prompt prefill (`{`) guarantees parseable JSON.
-- ⚡ **Six remix presets** — Captions, Remix concept, Edit ideas, Hashtags, New voiceover, Analyze.
-- ✍️ **Free-form prompts** — type anything; ⌘↩ / Ctrl↩ to send.
-- 💾 **Save / re-remix** — save the remix as Markdown, like it (counter pops), or jump back to the composer with the same prompt.
-- 🔐 **Local-only key storage** — your Anthropic API key lives in `chrome.storage.local`, nothing else.
-- 🧠 **Prompt caching** — the system prompt is cached so repeat remixes are cheap.
+## What It Does
 
-## Install (developer mode)
+When you click Remix on a TikTok video:
 
-1. `git clone` this repo to your machine.
-2. Open `chrome://extensions` in Chrome (or any Chromium browser).
-3. Toggle **Developer mode** on (top-right).
-4. Click **Load unpacked** and pick the `happy_remixer` directory.
-5. The options page opens automatically — paste your Anthropic API key and click **Save**. Get one at <https://console.anthropic.com/settings/keys>.
-6. Click **Test connection** to verify.
-7. Visit any TikTok video page (e.g. `tiktok.com/foryou`) — a **Remix** chip appears bottom-right.
+- Captures a frame from the video as a reference image
+- Opens [Dreamina](https://dreamina.capcut.com) (ByteDance's free AI video generator)
+- Auto-fills your prompt into Dreamina's editor
+- Uploads the reference frame
+- Sets the aspect ratio to 9:16 (vertical, TikTok format)
+- You just hit the generate button
 
-## How it works
+The whole point is you never have to manually copy-paste prompts or set up Dreamina yourself. One input box, one click.
+
+## Style Presets
+
+Quick-tap chips above the input bar:
+
+| Chip | Prompt |
+|------|--------|
+| Cinematic | Cinematic movie trailer with dramatic lighting |
+| Anime | Anime style animation |
+| Retro | 90s VHS tape with retro effects |
+| Dreamy | Dreamy ethereal slow motion |
+| Dark | Dark and moody thriller scene |
+| Funny | Absurd and exaggerated comedy |
+
+Or type anything you want.
+
+## Requirements
+
+- Chrome (or any Chromium browser — Edge, Brave, Arc, etc.)
+- A free [Dreamina](https://dreamina.capcut.com) account (ByteDance gives you 120 free credits)
+
+No API keys needed for Dreamina. If you want to use the Claude-powered remix features (text overlays, captions, analysis), add an Anthropic API key in the extension settings.
+
+## Files
 
 ```
-content/content.js      injects launcher + composer + native viewer into TikTok pages
-                        (everything inside a Shadow DOM, zero CSS leakage)
-                        samples 4 frames via OffscreenCanvas
-                        mirrors the playing video into the viewer via captureStream()
-                        renders timed overlays on a requestAnimationFrame loop synced to currentTime
-
-background.js           MV3 service worker; routes the remix request
-
-lib/ai.js               Claude API client; cached system prompt; assistant prefill ('{')
-                        guarantees JSON output; result normalized into a strict shape
-
-options/                API-key entry + connection test
-popup/                  toolbar status + quick actions
+content/content.js    Main content script — remix bar, frame capture,
+                      Dreamina auto-fill, native TikTok viewer
+background.js         Service worker — routes Claude API calls
+lib/ai.js             Claude API client (optional features)
+options/              Settings page for API key
+popup/                Toolbar popup
 ```
-
-### Structured remix shape
-
-```jsonc
-{
-  "handle":   "@vibe_lab",
-  "caption":  "POV: when AI clocks the trend before you do 💀",
-  "hashtags": ["fyp", "ai", "remix", "pov"],
-  "music":    "original sound · happy_remixer",
-  "overlays": [
-    { "time": 0.0, "text": "POV:", "style": "title" },
-    { "time": 0.6, "text": "you let an AI", "style": "body" },
-    { "time": 1.6, "text": "remix your tiktok", "style": "body" },
-    { "time": 3.0, "text": "💀", "style": "emoji" }
-  ],
-  "summary":  "Plays on the POV trope; first overlay lands inside the 1.5s hook window."
-}
-```
-
-## Models
-
-The default is `claude-sonnet-4-6` (fast + smart). You can switch to `claude-opus-4-7` (smartest) or `claude-haiku-4-5-20251001` (cheapest) in Settings.
 
 ## Privacy
 
-- Frames + your prompt are sent to `api.anthropic.com` over HTTPS, with your API key. They are not sent anywhere else.
-- The TikTok page never sees your API key — calls happen from the background service worker.
-- Recording playback is done locally with `MediaRecorder` on the page's `<video>` element. The result is downloaded directly to your machine.
-
-## Limitations
-
-- Only triggers on `tiktok.com` video pages (URLs that look like `/@user/video/123…`).
-- Audio analysis: Claude only sees images, so prompts about specific sounds/music will be answered from visual context only.
-- The viewer mirrors the source via `captureStream()`. If TikTok serves a DRM-protected stream in your region, the mirror may render black; the overlays still play on the correct timeline.
-- TikTok's DOM may shift; the launcher targets the largest visible `<video>` element to stay resilient.
+- Your prompt and a single video frame are sent to Dreamina when you click send
+- If you use Claude features, frames go to `api.anthropic.com` with your API key
+- Nothing is stored on any server. The extension only uses `chrome.storage.local`
+- TikTok never sees your API key — all calls go through the background worker
 
 ## Development
 
-There is no build step. Edit a file, hit **Reload** on the extension card in `chrome://extensions`, refresh the TikTok tab.
-
-If you change `manifest.json` or `background.js` you need to reload the extension. Content-script changes only need a tab refresh.
+No build step. Edit a file, hit Reload on the extension card in `chrome://extensions`, refresh the TikTok tab.
 
 ## License
 
