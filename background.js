@@ -34,6 +34,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true; // keep the channel open for async response
   }
 
+  if (msg?.type === 'open-dreamina-bg') {
+    // Open Dreamina in a background tab so the user stays on TikTok.
+    chrome.tabs.create({ url: msg.url, active: false });
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (msg?.type === 'ping') {
     sendResponse({ ok: true, ts: Date.now() });
     return false;

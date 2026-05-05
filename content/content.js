@@ -307,12 +307,12 @@
   async function sendToDreamina(prompt) {
     if (!prompt || !prompt.trim()) return;
     const barStatus = shadow.getElementById('bar-status');
-    barStatus.textContent = 'Capturing…';
+    barStatus.textContent = '✦ Capturing…';
 
     try {
       // Grab one reference frame from the current video
       let frameData = null;
-      if (currentVideoEl) {
+      if (currentVideoEl && currentVideoEl.readyState >= 2) {
         const vw = currentVideoEl.videoWidth || 512;
         const vh = currentVideoEl.videoHeight || 910;
         const w = 512;
@@ -324,7 +324,7 @@
         frameData = await blobToBase64(blob);
       }
 
-      barStatus.textContent = 'Opening Dreamina…';
+      barStatus.textContent = '✦ Sending to Dreamina…';
 
       // Stash the remix request for the Dreamina tab
       await chrome.storage.local.set({
@@ -332,14 +332,26 @@
           prompt: prompt.trim(),
           frame: frameData,
           sourceUrl: location.href,
+          autoGenerate: true,
           ts: Date.now(),
         },
       });
 
-      // Open Dreamina's video generator
-      window.open('https://dreamina.capcut.com/ai-tool/generate?type=video', '_blank');
+      // Open Dreamina in background tab (user stays on TikTok)
+      chrome.runtime.sendMessage({
+        type: 'open-dreamina-bg',
+        url: 'https://dreamina.capcut.com/ai-tool/generate?type=video',
+      });
+
+      barStatus.textContent = '✦ Generating on Dreamina…';
+      // Clear status after a bit — generation happens in background tab
+      setTimeout(() => {
+        if (barStatus.textContent.includes('Generating')) {
+          barStatus.textContent = '✦ Running in background tab';
+        }
+      }, 4000);
+      setTimeout(() => { barStatus.textContent = ''; }, 10000);
       toggleRemixBar(false);
-      barStatus.textContent = '';
     } catch (e) {
       barStatus.textContent = '⚠️ ' + (e.message || 'Failed');
       setTimeout(() => { barStatus.textContent = ''; }, 3000);
@@ -409,6 +421,27 @@
           fileInput.dispatchEvent(new Event('change', { bubbles: true }));
         } catch (_) {}
       }
+    }
+
+    // Auto-click generate if flagged
+    if (data.autoGenerate) {
+      await new Promise((r) => setTimeout(r, 800));
+      // Dreamina's generate button is the circular primary button at bottom-right
+      const genBtn =
+        document.querySelector('button.lv-btn.lv-btn-primary.lv-btn-shape-circle') ||
+        document.querySelector('button[class*="btn-primary"][class*="circle"]') ||
+        [...document.querySelectorAll('button')].find(
+          (b) => b.querySelector('svg') && getComputedStyle(b).borderRadius.includes('50'),
+        );
+      if (genBtn) genBtn.click();
+
+      // Dreamina may show a "Before you continue" consent dialog — auto-confirm
+      await new Promise((r) => setTimeout(r, 1000));
+      const confirmBtn =
+        [...document.querySelectorAll('button')].find(
+          (b) => b.textContent.trim() === 'Confirm',
+        );
+      if (confirmBtn) confirmBtn.click();
     }
   }
 
