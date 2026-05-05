@@ -8,8 +8,8 @@
   if (window.__happyRemixerLoaded) return;
   window.__happyRemixerLoaded = true;
 
-  const VIDEO_URL_RE = /\/@[^/]+\/video\/\d+/;
   const PANEL_WIDTH = 380;
+  const TAP_GAP_MS = 240;        // single-vs-double tap window
 
   let host = null;
   let shadow = null;
@@ -18,18 +18,24 @@
   let currentVideoEl = null;
   let lastUrl = location.href;
   let lastPrompt = '';
-  let currentRemix = null;       // last successful remix object
+  let currentRemix = null;
   let mirrorStream = null;
   let overlayRaf = 0;
-  let likeCount = 0;
   let playPauseInterval = 0;
+  let engagementInterval = 0;
+  let savedSourceVolume = null;
+  let savedSourceMuted = null;
+  let mirrorMuted = false;
+  let mirrorPausedByUser = false;
+  let lastTapAt = 0;
+  let pendingSingleTap = 0;
 
   // ============================================================
   // Bootstrapping
   // ============================================================
 
-  function isVideoPage() {
-    return VIDEO_URL_RE.test(location.pathname);
+  function isTikTok() {
+    return /^https?:\/\/(www\.)?tiktok\.com\//.test(location.href);
   }
 
   function ensureHost() {
@@ -45,16 +51,20 @@
   }
 
   function findVideo() {
+    // Pick the largest visible video on the page (works on /@user/video/123,
+    // /foryou, /explore, profile pages, embeds — any layout with a player).
     const vids = [...document.querySelectorAll('video')];
     let best = null;
     let bestArea = 0;
     for (const v of vids) {
       const r = v.getBoundingClientRect();
+      if (r.width < 160 || r.height < 200) continue;
+      // Must be on-screen-ish
+      if (r.bottom < 0 || r.top > innerHeight) continue;
+      // Must have decoded
+      if (!v.videoWidth) continue;
       const area = r.width * r.height;
-      if (area > bestArea && r.width > 100 && r.height > 100) {
-        best = v;
-        bestArea = area;
-      }
+      if (area > bestArea) { best = v; bestArea = area; }
     }
     return best;
   }
@@ -65,14 +75,22 @@
       if (panelOpen) togglePanel(false);
       if (viewerOpen) closeViewer();
     }
-    if (!isVideoPage()) {
+    if (!isTikTok()) {
       setLauncherVisible(false);
       return;
     }
     ensureHost();
     const v = findVideo();
     if (v) {
-      currentVideoEl = v;
+      // If the source video swapped while the viewer is open (user navigated
+      // to a new video without a URL change), reset the viewer's mirror.
+      if (viewerOpen && v !== currentVideoEl) {
+        currentVideoEl = v;
+        stopMirror();
+        startMirror();
+      } else {
+        currentVideoEl = v;
+      }
       setLauncherVisible(true);
     } else {
       setLauncherVisible(false);
@@ -260,8 +278,8 @@
       };
       const resp = await chrome.runtime.sendMessage({ type: 'remix', prompt, frames, meta });
       if (resp?.error) {
-        status.className = 'status err';
-        status.textContent = resp.error;
+        if (viewerOpen) flashViewerToast('⚠️ ' + resp.error);
+        else { status.className = 'status err'; status.textContent = resp.error; }
         return;
       }
       currentRemix = resp.remix;
@@ -269,8 +287,9 @@
       togglePanel(false);
       openViewer(resp.remix);
     } catch (e) {
-      status.className = 'status err';
-      status.textContent = String(e?.message || e);
+      const msg = String(e?.message || e);
+      if (viewerOpen) flashViewerToast('⚠️ ' + msg);
+      else { status.className = 'status err'; status.textContent = msg; }
     } finally {
       send.disabled = false;
     }
@@ -291,16 +310,26 @@
   function openViewer(remix) {
     if (!remix || !currentVideoEl) return;
     viewerOpen = true;
-    likeCount = 0;
+    mirrorPausedByUser = false;
+
+    // Silence the source so the mirror plays the audio (no doubling).
+    try {
+      savedSourceVolume = currentVideoEl.volume;
+      savedSourceMuted = currentVideoEl.muted;
+      currentVideoEl.volume = 0;
+      currentVideoEl.muted = true;
+    } catch (_) {}
+
     const v = shadow.getElementById('viewer');
     v.classList.add('open');
+    shadow.getElementById('stage').classList.remove('paused');
     updateHostPointer();
 
-    // Reset hashtags scroller / overlays / info from previous run
     populateInfo(remix);
     buildOverlays(remix);
     startMirror();
     bindViewerEvents();
+    startEngagementTicker();
     hideTikTokRail(true);
   }
 
@@ -312,8 +341,39 @@
     cancelAnimationFrame(overlayRaf);
     overlayRaf = 0;
     if (playPauseInterval) { clearInterval(playPauseInterval); playPauseInterval = 0; }
+    if (engagementInterval) { clearInterval(engagementInterval); engagementInterval = 0; }
+    if (pendingSingleTap) { clearTimeout(pendingSingleTap); pendingSingleTap = 0; }
+
+    // Restore source audio.
+    try {
+      if (currentVideoEl && savedSourceVolume != null) {
+        currentVideoEl.volume = savedSourceVolume;
+        currentVideoEl.muted = !!savedSourceMuted;
+      }
+    } catch (_) {}
+    savedSourceVolume = null;
+    savedSourceMuted = null;
+
     hideTikTokRail(false);
     updateHostPointer();
+  }
+
+  function startEngagementTicker() {
+    if (engagementInterval) clearInterval(engagementInterval);
+    engagementInterval = setInterval(() => {
+      if (!viewerOpen) return;
+      bumpCount('v-like-count', 1 + Math.floor(Math.random() * 4));
+      if (Math.random() < 0.6) bumpCount('v-comments-count', 1);
+      if (Math.random() < 0.45) bumpCount('v-saves-count', 1 + Math.floor(Math.random() * 2));
+      if (Math.random() < 0.35) bumpCount('v-shares-count', 1);
+    }, 1800);
+  }
+
+  function bumpCount(id, by) {
+    const el = shadow.getElementById(id);
+    if (!el) return;
+    const cur = parseHuman(el.textContent);
+    el.textContent = humanCount(cur + by);
   }
 
   function populateInfo(r) {
@@ -328,11 +388,13 @@
       tagsEl.appendChild(s);
     }
     shadow.getElementById('v-music-name').textContent = r.music;
-    // reset like
-    shadow.getElementById('v-like-count').textContent = humanCount(287000);
-    shadow.getElementById('v-comments-count').textContent = humanCount(4321);
-    shadow.getElementById('v-shares-count').textContent = humanCount(1024);
-    shadow.getElementById('v-saves-count').textContent = humanCount(8930);
+    // Seeded engagement varies per remix so nothing feels static.
+    const seed = (r.handle + r.caption).split('').reduce((a, c) => (a * 33 + c.charCodeAt(0)) >>> 0, 5381);
+    const rnd = (n) => ((seed >> n) & 0xffff) / 0xffff;
+    shadow.getElementById('v-like-count').textContent     = humanCount(80_000 + Math.floor(rnd(0)  * 950_000));
+    shadow.getElementById('v-comments-count').textContent = humanCount(  900 + Math.floor(rnd(2)  *  18_000));
+    shadow.getElementById('v-shares-count').textContent   = humanCount(  400 + Math.floor(rnd(4)  *  12_000));
+    shadow.getElementById('v-saves-count').textContent    = humanCount(2_500 + Math.floor(rnd(6)  *  46_000));
     const heart = shadow.getElementById('btn-like');
     heart.classList.remove('liked');
   }
@@ -360,16 +422,20 @@
       const end = next ? Math.min(next.time, overlays[i].time + 2.6) : overlays[i].time + 2.6;
       overlays[i].end = end;
     }
-    // start animation loop
+    // start animation loop (also drives the progress bar)
     cancelAnimationFrame(overlayRaf);
+    const fill = shadow.getElementById('progress-fill');
     const loop = () => {
-      const t = currentVideoEl?.currentTime ?? 0;
+      const v = currentVideoEl;
+      const t = v?.currentTime ?? 0;
+      const dur = v && isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
       for (const o of overlays) {
         const visible = t >= o.time && t < o.end;
         if (visible !== o.el.classList.contains('on')) {
           o.el.classList.toggle('on', visible);
         }
       }
+      if (fill) fill.style.transform = `scaleX(${dur ? Math.min(1, t / dur) : 0})`;
       overlayRaf = requestAnimationFrame(loop);
     };
     overlayRaf = requestAnimationFrame(loop);
@@ -377,7 +443,7 @@
 
   function startMirror() {
     const m = shadow.getElementById('mirror');
-    m.muted = false;
+    m.muted = mirrorMuted;
     try {
       if (typeof currentVideoEl.captureStream === 'function') {
         mirrorStream = currentVideoEl.captureStream();
@@ -411,39 +477,35 @@
     }
   }
 
-  let mirrorPausedByUser = false;
-
   function bindViewerEvents() {
     const v = shadow.getElementById('viewer');
     const stage = shadow.getElementById('stage');
     const closeBtn = shadow.getElementById('viewer-close');
     closeBtn.onclick = closeViewer;
 
-    // Tap stage = pause/play (like native TikTok)
-    stage.onclick = () => {
+    // Stage tap handler — single tap = pause/play, double tap = like.
+    stage.onclick = (e) => {
       if (!currentVideoEl) return;
-      if (currentVideoEl.paused) {
-        mirrorPausedByUser = false;
-        currentVideoEl.play().catch(() => {});
-        stage.classList.remove('paused');
-      } else {
-        mirrorPausedByUser = true;
-        currentVideoEl.pause();
-        stage.classList.add('paused');
+      const now = Date.now();
+      if (now - lastTapAt < TAP_GAP_MS) {
+        // double-tap → like, cancel the pending pause/play
+        if (pendingSingleTap) { clearTimeout(pendingSingleTap); pendingSingleTap = 0; }
+        lastTapAt = 0;
+        triggerLike(true, e.clientX, e.clientY);
+        spawnFloatingHeart(e.clientX, e.clientY);
+        return;
       }
+      lastTapAt = now;
+      pendingSingleTap = setTimeout(() => {
+        pendingSingleTap = 0;
+        togglePlayback();
+      }, TAP_GAP_MS);
     };
 
     // Action rail
     shadow.getElementById('btn-like').onclick = (e) => {
       e.stopPropagation();
-      const btn = e.currentTarget;
-      btn.classList.toggle('liked');
-      // bump count
-      const c = shadow.getElementById('v-like-count');
-      const base = parseHuman(c.textContent);
-      c.textContent = humanCount(btn.classList.contains('liked') ? base + 1 : base - 1);
-      // pop animation
-      btn.classList.remove('pop'); void btn.offsetWidth; btn.classList.add('pop');
+      triggerLike();
     };
     shadow.getElementById('btn-comment').onclick = (e) => {
       e.stopPropagation();
@@ -451,10 +513,7 @@
     };
     shadow.getElementById('btn-reremix').onclick = (e) => {
       e.stopPropagation();
-      closeViewer();
-      const ti = shadow.getElementById('prompt-input');
-      ti.value = lastPrompt;
-      togglePanel(true);
+      reRemixVariant();
     };
     shadow.getElementById('btn-save').onclick = (e) => {
       e.stopPropagation();
@@ -462,10 +521,13 @@
     };
     shadow.getElementById('btn-music').onclick = (e) => {
       e.stopPropagation();
-      const t = shadow.getElementById('music-toast');
-      t.textContent = '🎵 ' + (currentRemix?.music || '');
-      t.classList.add('show');
-      setTimeout(() => t.classList.remove('show'), 1800);
+      flashViewerToast('🎵 ' + (currentRemix?.music || ''));
+    };
+
+    // Mute toggle
+    shadow.getElementById('btn-mute').onclick = (e) => {
+      e.stopPropagation();
+      toggleMute();
     };
 
     // Sheet close
@@ -474,18 +536,97 @@
       shadow.getElementById('sheet').classList.remove('open');
     };
 
-    // ESC to close viewer
-    if (!v.__escBound) {
-      v.__escBound = true;
+    // Keyboard + swipe (only bind once)
+    if (!v.__keysBound) {
+      v.__keysBound = true;
       document.addEventListener('keydown', (e) => {
         if (!viewerOpen) return;
-        if (e.key === 'Escape') closeViewer();
-        if (e.key === ' ') {
-          e.preventDefault();
-          stage.click();
+        switch (e.key) {
+          case 'Escape': closeViewer(); break;
+          case ' ':
+            e.preventDefault();
+            togglePlayback();
+            break;
+          case 'ArrowUp':
+            e.preventDefault();
+            reRemixVariant();
+            break;
+          case 'm': case 'M':
+            toggleMute();
+            break;
+          case 'l': case 'L':
+            triggerLike(true);
+            break;
         }
       });
+      // Wheel-swipe up to re-remix
+      v.addEventListener('wheel', (e) => {
+        if (!viewerOpen) return;
+        if (e.deltaY < -45) {
+          if (Date.now() - (v.__lastWheelAt || 0) > 800) {
+            v.__lastWheelAt = Date.now();
+            reRemixVariant();
+          }
+        }
+      }, { passive: true });
     }
+  }
+
+  function togglePlayback() {
+    if (!currentVideoEl) return;
+    const stage = shadow.getElementById('stage');
+    if (currentVideoEl.paused) {
+      mirrorPausedByUser = false;
+      currentVideoEl.play().catch(() => {});
+      stage.classList.remove('paused');
+    } else {
+      mirrorPausedByUser = true;
+      currentVideoEl.pause();
+      stage.classList.add('paused');
+    }
+  }
+
+  function triggerLike(forceLike = false, _x, _y) {
+    const btn = shadow.getElementById('btn-like');
+    const cur = btn.classList.contains('liked');
+    const wantLiked = forceLike ? true : !cur;
+    btn.classList.toggle('liked', wantLiked);
+    const c = shadow.getElementById('v-like-count');
+    const base = parseHuman(c.textContent);
+    c.textContent = humanCount(wantLiked === cur ? base : (wantLiked ? base + 1 : base - 1));
+    btn.classList.remove('pop'); void btn.offsetWidth; btn.classList.add('pop');
+  }
+
+  function spawnFloatingHeart(clientX, clientY) {
+    const layer = shadow.getElementById('hearts-layer');
+    if (!layer) return;
+    const stageRect = shadow.getElementById('stage').getBoundingClientRect();
+    const x = (clientX ?? stageRect.left + stageRect.width / 2) - stageRect.left;
+    const y = (clientY ?? stageRect.top + stageRect.height / 2) - stageRect.top;
+    const h = document.createElement('div');
+    h.className = 'fheart';
+    h.style.left = x + 'px';
+    h.style.top = y + 'px';
+    h.style.setProperty('--rot', (Math.random() * 50 - 25) + 'deg');
+    h.innerHTML = `<svg viewBox="0 0 32 32" width="68" height="68"><path d="M16 27s-9-5.7-12.4-11.6C1 10.6 4 5 9 5c3 0 5 2 7 4 2-2 4-4 7-4 5 0 8 5.6 5.4 10.4C25 21.3 16 27 16 27z" fill="#ff0050"/></svg>`;
+    layer.appendChild(h);
+    setTimeout(() => h.remove(), 1100);
+  }
+
+  function toggleMute() {
+    const m = shadow.getElementById('mirror');
+    mirrorMuted = !mirrorMuted;
+    try { m.muted = mirrorMuted; } catch (_) {}
+    shadow.getElementById('btn-mute').classList.toggle('muted', mirrorMuted);
+  }
+
+  function reRemixVariant() {
+    if (!lastPrompt) {
+      flashViewerToast('No prompt to re-remix.');
+      return;
+    }
+    flashViewerToast('Remixing again…');
+    runRemix(lastPrompt + '\n\n(Give me a different angle than before.)');
   }
 
   function showSheet(text) {
@@ -885,6 +1026,70 @@
       max-width: 250px; text-overflow: ellipsis;
     }
 
+    /* mute button (top-right) */
+    #btn-mute {
+      position: absolute; top: 14px; right: 14px;
+      width: 36px; height: 36px; border-radius: 50%;
+      background: rgba(0,0,0,0.32);
+      backdrop-filter: blur(8px);
+      border: none; color: #fff; cursor: pointer;
+      display: grid; place-items: center;
+      z-index: 10;
+    }
+    #btn-mute:hover { background: rgba(0,0,0,0.5); }
+    #btn-mute .ic-off { display: none; }
+    #btn-mute.muted .ic-on { display: none; }
+    #btn-mute.muted .ic-off { display: block; }
+
+    /* floating hearts on double-tap */
+    #hearts-layer {
+      position: absolute; left: 50%; top: 0; bottom: 0;
+      transform: translateX(-50%);
+      width: min(420px, 100vw);
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 8;
+    }
+    @media (min-width: 700px) {
+      #hearts-layer { height: calc(100vh - 32px); top: 16px; bottom: 16px; }
+    }
+    .fheart {
+      position: absolute;
+      transform: translate(-50%, -50%) scale(0) rotate(var(--rot, 0deg));
+      animation: fheart 1s cubic-bezier(0.2, 0.8, 0.25, 1) forwards;
+      filter: drop-shadow(0 4px 14px rgba(255, 0, 80, 0.5));
+    }
+    @keyframes fheart {
+      0%   { transform: translate(-50%, -50%) scale(0)   rotate(var(--rot, 0deg)); opacity: 0; }
+      18%  { transform: translate(-50%, -50%) scale(1.2) rotate(var(--rot, 0deg)); opacity: 1; }
+      35%  { transform: translate(-50%, -50%) scale(1.0) rotate(var(--rot, 0deg)); opacity: 1; }
+      100% { transform: translate(-50%, -130%) scale(0.85) rotate(var(--rot, 0deg)); opacity: 0; }
+    }
+
+    /* progress bar (bottom of stage) */
+    #progress {
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      width: min(420px, 100vw);
+      height: 3px;
+      background: rgba(255,255,255,0.18);
+      transform: translateX(-50%);
+      z-index: 6;
+    }
+    @media (min-width: 700px) {
+      #progress {
+        bottom: 16px;
+        border-radius: 0 0 14px 14px;
+      }
+    }
+    #progress-fill {
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, #ff0050, #ff6b00);
+      transform-origin: left center;
+      transform: scaleX(0);
+    }
+
     /* sheet (for "comments"/notes) */
     #sheet {
       position: absolute; left: 0; right: 0; bottom: 0;
@@ -1001,8 +1206,15 @@
       </div>
 
       <div id="overlay-layer"></div>
+      <div id="hearts-layer"></div>
 
       <button id="viewer-close" aria-label="Close" title="Close (Esc)">${SVG_CLOSE}</button>
+      <button id="btn-mute" aria-label="Mute" title="Mute (M)">
+        <svg class="ic-on" viewBox="0 0 24 24" width="18" height="18" fill="#fff"><path d="M4 9v6h4l5 5V4L8 9H4z"/><path d="M16 8a5 5 0 0 1 0 8" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>
+        <svg class="ic-off" viewBox="0 0 24 24" width="18" height="18" fill="#fff"><path d="M4 9v6h4l5 5V4L8 9H4z"/><path d="M16 8l6 8M22 8l-6 8" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+
+      <div id="progress"><div id="progress-fill"></div></div>
 
       <div id="rail">
         <button class="rail-btn" id="btn-like" aria-label="Like">
