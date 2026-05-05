@@ -14,6 +14,7 @@
   let host = null;
   let shadow = null;
   let panelOpen = false;
+  let remixBarOpen = false;
   let viewerOpen = false;
   let currentVideoEl = null;
   let lastUrl = location.href;
@@ -195,7 +196,7 @@
       clone.style.transform = 'scale(1.25)';
       setTimeout(() => { clone.style.transform = 'scale(0.9)'; }, 120);
       setTimeout(() => { clone.style.transform = 'scale(1)'; }, 220);
-      setTimeout(() => { togglePanel(!panelOpen); }, 180);
+      setTimeout(() => { toggleRemixBar(!remixBarOpen); }, 180);
     };
     clone.addEventListener('click', onClick, true);
     clone.setAttribute('aria-label', 'Remix this video with AI');
@@ -218,7 +219,7 @@
     const sendBtn = shadow.getElementById('send-btn');
     const settingsLink = shadow.getElementById('open-settings');
 
-    launcher.addEventListener('click', () => togglePanel(!panelOpen));
+    launcher.addEventListener('click', () => toggleRemixBar(!remixBarOpen));
     closeBtn.addEventListener('click', () => togglePanel(false));
     sendBtn.addEventListener('click', () => runRemix(promptInput.value));
     promptInput.addEventListener('keydown', (e) => {
@@ -232,13 +233,6 @@
     shadow.querySelectorAll('[data-preset]').forEach((el) => {
       el.addEventListener('click', () => {
         const preset = el.getAttribute('data-preset');
-
-        // Dreamina opens the AI video generator in a new tab.
-        if (preset === 'dreamina') {
-          window.open('https://dreamina.capcut.com/ai-tool/generate?type=video', '_blank');
-          return;
-        }
-
         const prompts = {
           captions: 'Generate the catchiest possible caption + 5–6 timed text overlays that hook in the first second.',
           remix: 'Suggest a creative remix concept that flips the video — different angle, parody, or reaction. Caption + overlay script that lands the new angle.',
@@ -251,6 +245,18 @@
         promptInput.focus();
       });
     });
+
+    // -- Remix bar (native Dreamina flow) --
+    const remixInput = shadow.getElementById('remix-input');
+    const remixGo = shadow.getElementById('remix-go');
+    remixGo.addEventListener('click', () => sendToDreamina(remixInput.value));
+    remixInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); sendToDreamina(remixInput.value); }
+      if (e.key === 'Escape') toggleRemixBar(false);
+    });
+
+    // Kick off Dreamina auto-fill (no-op if not on Dreamina)
+    initDreamina();
   }
 
   function togglePanel(open) {
@@ -264,9 +270,147 @@
     }
   }
 
+  function toggleRemixBar(open) {
+    remixBarOpen = open;
+    const bar = shadow.getElementById('remix-bar');
+    bar.classList.toggle('open', open);
+    updateHostPointer();
+    if (open) {
+      const inp = shadow.getElementById('remix-input');
+      setTimeout(() => inp.focus(), 80);
+    }
+  }
+
+  // ============================================================
+  // Send to Dreamina — capture a reference frame, stash it in
+  // chrome.storage, and open Dreamina's AI Video generator.
+  // The content script on Dreamina picks it up and auto-fills.
+  // ============================================================
+
+  async function sendToDreamina(prompt) {
+    if (!prompt || !prompt.trim()) return;
+    const barStatus = shadow.getElementById('bar-status');
+    barStatus.textContent = 'Capturing…';
+
+    try {
+      // Grab one reference frame from the current video
+      let frameData = null;
+      if (currentVideoEl) {
+        const vw = currentVideoEl.videoWidth || 512;
+        const vh = currentVideoEl.videoHeight || 910;
+        const w = 512;
+        const h = Math.round(w * (vh / Math.max(1, vw)));
+        const canvas = new OffscreenCanvas(w, h);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(currentVideoEl, 0, 0, w, h);
+        const blob = await canvas.convertToBlob({ type: 'image/png' });
+        frameData = await blobToBase64(blob);
+      }
+
+      barStatus.textContent = 'Opening Dreamina…';
+
+      // Stash the remix request for the Dreamina tab
+      await chrome.storage.local.set({
+        pendingDreaminaRemix: {
+          prompt: prompt.trim(),
+          frame: frameData,
+          sourceUrl: location.href,
+          ts: Date.now(),
+        },
+      });
+
+      // Open Dreamina's video generator
+      window.open('https://dreamina.capcut.com/ai-tool/generate?type=video', '_blank');
+      toggleRemixBar(false);
+      barStatus.textContent = '';
+    } catch (e) {
+      barStatus.textContent = '⚠️ ' + (e.message || 'Failed');
+      setTimeout(() => { barStatus.textContent = ''; }, 3000);
+    }
+  }
+
+  // ============================================================
+  // Dreamina auto-fill — when the content script loads on
+  // dreamina.capcut.com, check for a pending remix request and
+  // inject the prompt + reference image automatically.
+  // ============================================================
+
+  async function initDreamina() {
+    if (!location.hostname.endsWith('dreamina.capcut.com')) return;
+
+    let data;
+    try {
+      const res = await chrome.storage.local.get('pendingDreaminaRemix');
+      data = res.pendingDreaminaRemix;
+    } catch (_) { return; }
+    if (!data || Date.now() - data.ts > 120_000) return; // stale
+
+    // Clear so we don't re-trigger
+    await chrome.storage.local.remove('pendingDreaminaRemix');
+
+    // Wait for the ProseMirror prompt editor to appear
+    const editor = await waitForEl('.tiptap.ProseMirror', 12_000);
+    if (!editor) return;
+
+    // Focus and fill the prompt
+    editor.focus();
+    // ProseMirror needs real input events, not just textContent assignment
+    const sel = window.getSelection();
+    sel.selectAllChildren(editor);
+    sel.collapseToEnd();
+    document.execCommand('insertText', false, data.prompt);
+
+    // Try to switch aspect ratio to 9:16 for TikTok vertical
+    await new Promise((r) => setTimeout(r, 600));
+    const aspectBtn = [...document.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === '16:9',
+    );
+    if (aspectBtn) {
+      aspectBtn.click();
+      await new Promise((r) => setTimeout(r, 400));
+      const option = [...document.querySelectorAll('[role="option"], [role="menuitem"], li')]
+        .find((el) => el.textContent.includes('9:16'));
+      if (option) option.click();
+    }
+
+    // Upload reference frame if available
+    if (data.frame) {
+      await new Promise((r) => setTimeout(r, 500));
+      const fileInput = document.querySelector('input[type="file"]');
+      if (fileInput) {
+        try {
+          const byteStr = atob(data.frame);
+          const arr = new Uint8Array(byteStr.length);
+          for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i);
+          const file = new File([arr], 'reference.png', { type: 'image/png' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          fileInput.files = dt.files;
+          fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (_) {}
+      }
+    }
+  }
+
+  function waitForEl(selector, timeout = 8000) {
+    return new Promise((resolve) => {
+      const existing = document.querySelector(selector);
+      if (existing) { resolve(existing); return; }
+      const observer = new MutationObserver(() => {
+        const el = document.querySelector(selector);
+        if (el) { observer.disconnect(); resolve(el); }
+      });
+      observer.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+      setTimeout(() => { observer.disconnect(); resolve(null); }, timeout);
+    });
+  }
+
   function updateHostPointer() {
     if (!host) return;
-    host.style.pointerEvents = (panelOpen || viewerOpen) ? 'auto' : 'none';
+    host.style.pointerEvents = (panelOpen || remixBarOpen || viewerOpen) ? 'auto' : 'none';
   }
 
   function hydratePreview() {
@@ -1184,15 +1328,6 @@
       transition: background .12s ease, border-color .12s ease;
     }
     .chip:hover { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.18); }
-    .chip-dreamina {
-      background: linear-gradient(135deg, rgba(0,206,209,0.15), rgba(138,43,226,0.15));
-      border-color: rgba(0,206,209,0.35);
-      width: 100%;
-    }
-    .chip-dreamina:hover {
-      background: linear-gradient(135deg, rgba(0,206,209,0.25), rgba(138,43,226,0.25));
-      border-color: rgba(0,206,209,0.55);
-    }
     .composer { padding: 10px 16px 12px; }
     #prompt-input {
       width: 100%; min-height: 70px; resize: vertical;
@@ -1565,6 +1700,67 @@
     #music-toast.show {
       opacity: 1; transform: translateX(-50%) translateY(0);
     }
+
+    /* ======= Native remix bar (Dreamina flow) ======= */
+    #remix-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: rgba(18, 18, 22, 0.94);
+      backdrop-filter: blur(24px) saturate(150%);
+      -webkit-backdrop-filter: blur(24px) saturate(150%);
+      border-top: 1px solid rgba(255,255,255,0.06);
+      padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+      transform: translateY(100%);
+      transition: transform .25s cubic-bezier(0.2, 0.8, 0.25, 1);
+      pointer-events: auto;
+      z-index: 50;
+    }
+    #remix-bar.open { transform: translateY(0); }
+    .bar-inner {
+      max-width: 560px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #remix-input {
+      flex: 1;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 22px;
+      padding: 11px 18px;
+      color: #f3f3f5;
+      font: 14px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      outline: none;
+      letter-spacing: -0.005em;
+    }
+    #remix-input::placeholder { color: rgba(255,255,255,0.3); }
+    #remix-input:focus {
+      border-color: rgba(255,0,80,0.45);
+      box-shadow: 0 0 0 3px rgba(255,0,80,0.08);
+      background: rgba(255,255,255,0.09);
+    }
+    #remix-go {
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #ff0050, #8a2be2);
+      border: none;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+      color: #fff;
+      transition: transform .15s ease, opacity .15s ease;
+    }
+    #remix-go:hover { transform: scale(1.06); }
+    #remix-go:active { transform: scale(0.93); }
+    .bar-status {
+      text-align: center;
+      font-size: 12px;
+      color: rgba(255,255,255,0.5);
+      min-height: 18px;
+      padding-top: 4px;
+    }
   `;
 
   // SVG icon helpers (so we can keep markup tidy)
@@ -1605,7 +1801,6 @@
       </section>
 
       <section class="presets">
-        <button class="chip chip-dreamina" data-preset="dreamina">✦ Remix with Dreamina</button>
         <button class="chip" data-preset="captions">Captions</button>
         <button class="chip" data-preset="remix">Remix concept</button>
         <button class="chip" data-preset="edits">Edit ideas</button>
@@ -1624,6 +1819,17 @@
 
       <section class="status" id="status"></section>
     </aside>
+
+    <!-- Native remix bar — TikTok-style prompt input -->
+    <div id="remix-bar">
+      <div class="bar-inner">
+        <input id="remix-input" type="text" placeholder="Describe your remix…" autocomplete="off" spellcheck="false" />
+        <button id="remix-go" aria-label="Generate">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+        </button>
+      </div>
+      <div id="bar-status" class="bar-status"></div>
+    </div>
 
     <!-- TikTok-native fullscreen viewer -->
     <section id="viewer" aria-label="Remix viewer">
