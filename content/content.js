@@ -627,7 +627,7 @@
     };
     shadow.getElementById('btn-save').onclick = (e) => {
       e.stopPropagation();
-      saveRemix();
+      saveVideo();
     };
     shadow.getElementById('btn-music').onclick = (e) => {
       e.stopPropagation();
@@ -810,7 +810,21 @@
 
   function showSheet(text) {
     const s = shadow.getElementById('sheet');
-    shadow.getElementById('sheet-body').textContent = text;
+    const body = shadow.getElementById('sheet-body');
+    body.textContent = text;
+    // Append a "Save as text" link
+    const link = document.createElement('a');
+    link.href = '#';
+    link.textContent = '📋 Copy all as text';
+    link.style.cssText = 'display:block;margin-top:12px;color:#ff8aa3;font-size:13px;text-decoration:none;';
+    link.onclick = (e) => {
+      e.preventDefault();
+      if (currentRemix) {
+        copyText(renderRemixMarkdown(currentRemix, lastPrompt));
+        flashViewerToast('Copied remix text');
+      }
+    };
+    body.appendChild(link);
     s.classList.add('open');
   }
 
@@ -827,6 +841,197 @@
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     flashViewerToast('Saved as Markdown');
+  }
+
+  // ============================================================
+  // Save video — records the mirror + overlays composited on a
+  // canvas, pulls audio from the mirror, outputs a .webm file.
+  // ============================================================
+
+  let _recRaf = 0;
+  let _recorder = null;
+
+  async function saveVideo() {
+    const mirror = shadow.getElementById('mirror');
+    if (!mirror || !currentRemix) {
+      flashViewerToast('Nothing to save yet');
+      return;
+    }
+    const saveBtn = shadow.getElementById('btn-save');
+
+    // If already recording, stop early.
+    if (_recorder && _recorder.state === 'recording') {
+      _recorder.stop();
+      return;
+    }
+
+    saveBtn.classList.add('recording');
+    const saveLbl = saveBtn.querySelector('.label');
+    if (saveLbl) saveLbl.textContent = 'REC';
+    flashViewerToast('⏺ Recording…');
+
+    const vw = currentVideoEl?.videoWidth || 720;
+    const vh = currentVideoEl?.videoHeight || 1280;
+    const canvas = document.createElement('canvas');
+    canvas.width = vw;
+    canvas.height = vh;
+    const ctx = canvas.getContext('2d');
+
+    // Canvas stream at 30 fps
+    const canvasStream = canvas.captureStream(30);
+
+    // Pull audio from the mirror element
+    try {
+      let audioSrc;
+      if (mirror.srcObject) {
+        audioSrc = mirror.srcObject;
+      } else if (typeof mirror.captureStream === 'function') {
+        audioSrc = mirror.captureStream();
+      }
+      if (audioSrc) {
+        for (const t of audioSrc.getAudioTracks()) canvasStream.addTrack(t);
+      }
+    } catch (_) {}
+
+    // Pick best available codec
+    const mimeType = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ].find((m) => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+
+    const recorder = new MediaRecorder(canvasStream, {
+      mimeType,
+      videoBitsPerSecond: 4_000_000,
+    });
+    _recorder = recorder;
+    const chunks = [];
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    const finish = () => {
+      cancelAnimationFrame(_recRaf);
+      _recorder = null;
+      const blob = new Blob(chunks, { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `remix-${Date.now()}.webm`;
+      document.documentElement.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      saveBtn.classList.remove('recording');
+      if (saveLbl) saveLbl.textContent = humanCount(parseHuman(saveLbl.textContent) || 0);
+      flashViewerToast('Video saved ✓');
+    };
+
+    recorder.onstop = finish;
+    recorder.onerror = () => {
+      cancelAnimationFrame(_recRaf);
+      _recorder = null;
+      saveBtn.classList.remove('recording');
+      if (saveLbl) saveLbl.textContent = humanCount(parseHuman(saveLbl.textContent) || 0);
+      flashViewerToast('⚠️ Recording failed');
+    };
+
+    // Prepare overlay timing
+    const overlays = (currentRemix.overlays || []).map((o, i, arr) => {
+      const next = arr[i + 1];
+      return {
+        text: o.text,
+        style: o.style || 'body',
+        time: o.time,
+        end: next ? Math.min(next.time, o.time + 2.6) : o.time + 2.6,
+        posIdx: i % 4,
+      };
+    });
+    const yPositions = [0.18, 0.33, 0.47, 0.63];
+
+    // Compositing render loop
+    function drawFrame() {
+      const t = currentVideoEl?.currentTime ?? 0;
+
+      // Video frame
+      try {
+        ctx.drawImage(mirror, 0, 0, vw, vh);
+      } catch (_) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, vw, vh);
+      }
+
+      // Overlays
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.shadowColor = 'rgba(0,0,0,0.55)';
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+
+      for (const o of overlays) {
+        if (t < o.time || t >= o.end) continue;
+        const sz =
+          o.style === 'title'    ? vw * 0.082 :
+          o.style === 'emoji'    ? vw * 0.15 :
+          o.style === 'subtitle' ? vw * 0.042 :
+                                   vw * 0.058;
+        ctx.font = `800 ${sz}px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif`;
+        ctx.fillText(o.text, vw / 2, vh * yPositions[o.posIdx]);
+      }
+
+      // Bottom-left info
+      ctx.textAlign = 'left';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 1;
+      const pad = vw * 0.042;
+      let y = vh - pad;
+
+      ctx.font = `500 ${vw * 0.028}px -apple-system, sans-serif`;
+      ctx.fillText('♫ ' + (currentRemix.music || ''), pad, y);
+      y -= vw * 0.048;
+
+      ctx.font = `600 ${vw * 0.03}px -apple-system, sans-serif`;
+      ctx.fillText((currentRemix.hashtags || []).map((h) => '#' + h).join(' '), pad, y);
+      y -= vw * 0.048;
+
+      ctx.font = `500 ${vw * 0.032}px -apple-system, sans-serif`;
+      let cap = currentRemix.caption || '';
+      const maxCapW = vw * 0.7;
+      if (ctx.measureText(cap).width > maxCapW) {
+        while (cap.length > 0 && ctx.measureText(cap + '…').width > maxCapW) cap = cap.slice(0, -1);
+        cap += '…';
+      }
+      ctx.fillText(cap, pad, y);
+      y -= vw * 0.055;
+
+      ctx.font = `700 ${vw * 0.04}px -apple-system, sans-serif`;
+      ctx.fillText(currentRemix.handle || '', pad, y);
+
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+
+      _recRaf = requestAnimationFrame(drawFrame);
+    }
+
+    // Rewind for a clean one-loop capture
+    try {
+      currentVideoEl.currentTime = 0;
+      await currentVideoEl.play().catch(() => {});
+    } catch (_) {}
+
+    drawFrame();
+    recorder.start(100);
+
+    // Stop after one loop (+ buffer), capped at 60s
+    const dur = currentVideoEl && isFinite(currentVideoEl.duration)
+      ? currentVideoEl.duration * 1000
+      : 10000;
+    setTimeout(() => {
+      if (recorder.state === 'recording') recorder.stop();
+    }, Math.min(dur + 300, 60000));
   }
 
   function flashViewerToast(text) {
@@ -1170,6 +1375,17 @@
     }
     .rail-btn.liked .icon-bg svg path { fill: #ff0050; stroke: #ff0050; }
     .rail-btn .label { font-size: 11.5px; opacity: 0.95; }
+
+    /* recording state on save button */
+    .rail-btn.recording .icon-bg {
+      background: rgba(255, 0, 50, 0.45) !important;
+      animation: rec-pulse 1s ease-in-out infinite !important;
+    }
+    .rail-btn.recording .label { color: #ff5070; }
+    @keyframes rec-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255, 0, 50, 0.5); }
+      50% { box-shadow: 0 0 0 8px rgba(255, 0, 50, 0); }
+    }
 
     /* music disc spinning */
     .music-btn .icon-bg {
