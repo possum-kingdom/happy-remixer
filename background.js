@@ -19,14 +19,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         const { apiKey, model } = await getSettings();
-        const { text, usage } = await callClaude({
+        const { remix, raw, usage } = await callClaude({
           apiKey,
           model,
           prompt: msg.prompt,
           frames: msg.frames,
           meta: msg.meta,
         });
-        sendResponse({ text, usage });
+        sendResponse({ remix, raw, usage });
       } catch (e) {
         sendResponse({ error: String(e?.message || e) });
       }
