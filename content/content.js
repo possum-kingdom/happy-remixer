@@ -94,7 +94,10 @@
       } else {
         currentVideoEl = v;
       }
-      setLauncherVisible(true);
+      // Try to inject our button into TikTok's action rail. If it lands,
+      // hide the floating chip; otherwise fall back to the chip.
+      const injected = injectRailButton();
+      setLauncherVisible(!injected);
     } else {
       setLauncherVisible(false);
     }
@@ -111,6 +114,91 @@
     if (!shadow) return;
     const l = shadow.getElementById('launcher');
     if (l) l.style.display = show ? 'flex' : 'none';
+  }
+
+  // ============================================================
+  // Inject a Remix button into TikTok's right-side action rail —
+  // alongside Like / Comment / Save / Share — so it looks native.
+  // ============================================================
+
+  // Outline-style happy face that matches TikTok's monochrome rail glyphs.
+  // Uses currentColor so it inherits whatever the rail buttons use (white on
+  // dark, dark-gray on light).
+  const RAIL_SMILEY_SVG = `
+    <svg viewBox="0 0 48 48" fill="none" stroke="currentColor"
+         stroke-width="3" stroke-linejoin="round" stroke-linecap="round"
+         aria-hidden="true">
+      <circle cx="24" cy="24" r="19"/>
+      <circle cx="17.5" cy="20" r="2.2" fill="currentColor" stroke="none"/>
+      <circle cx="30.5" cy="20" r="2.2" fill="currentColor" stroke="none"/>
+      <path d="M14.5 28 Q24 36 33.5 28"/>
+    </svg>
+  `;
+
+  function injectRailButton() {
+    if (document.querySelector('[data-happy-remixer-rail]')) return true;
+
+    // Probe for the rail by finding any of the standard action icons.
+    const probe =
+      document.querySelector('[data-e2e="like-icon"]') ||
+      document.querySelector('[data-e2e="browse-like-icon"]') ||
+      document.querySelector('[data-e2e="share-icon"]') ||
+      document.querySelector('[data-e2e="comment-icon"]') ||
+      document.querySelector('[data-e2e="browse-comment-icon"]');
+    if (!probe) return false;
+
+    // Walk up to the wrapper that contains both the button and its count
+    // ("section"). TikTok's modern layout puts each action in its own div.
+    const innerBtn = probe.closest('button') || probe;
+    const section = innerBtn.parentElement;
+    if (!section || !section.parentElement) return false;
+
+    // Clone the section so we inherit all of TikTok's CSS classes / spacing.
+    const clone = section.cloneNode(true);
+    clone.setAttribute('data-happy-remixer-rail', 'true');
+    // Strip data-e2e so TikTok's analytics don't pick our button up.
+    clone.querySelectorAll('[data-e2e]').forEach((el) => el.removeAttribute('data-e2e'));
+    clone.querySelectorAll('a').forEach((a) => { a.removeAttribute('href'); a.removeAttribute('target'); });
+
+    // Replace the icon glyph with our happy-face.
+    const svg = clone.querySelector('svg');
+    if (svg) {
+      const w = svg.getAttribute('width') || '32';
+      const h = svg.getAttribute('height') || '32';
+      const wrap = document.createElement('span');
+      wrap.innerHTML = RAIL_SMILEY_SVG;
+      const newSvg = wrap.firstElementChild;
+      newSvg.setAttribute('width', w);
+      newSvg.setAttribute('height', h);
+      svg.replaceWith(newSvg);
+    }
+
+    // Replace the count/label with the word "remix".
+    const labelEl =
+      clone.querySelector('strong[data-e2e]') ||
+      clone.querySelector('strong') ||
+      [...clone.querySelectorAll('span, div')].find(
+        (el) => el.children.length === 0 && /\S/.test(el.textContent),
+      );
+    if (labelEl) labelEl.textContent = 'remix';
+
+    // Hijack clicks anywhere inside the cloned section.
+    const onClick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      e.stopImmediatePropagation && e.stopImmediatePropagation();
+      togglePanel(!panelOpen);
+    };
+    clone.addEventListener('click', onClick, true);
+    clone.querySelectorAll('button, a').forEach((el) => {
+      el.addEventListener('click', onClick, true);
+      el.setAttribute('aria-label', 'Remix this video with AI');
+      el.setAttribute('title', 'Remix with AI');
+    });
+
+    // Insert right after the anchor's section.
+    section.parentElement.insertBefore(clone, section.nextSibling);
+    return true;
   }
 
   // ============================================================
