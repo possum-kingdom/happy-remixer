@@ -246,13 +246,30 @@
       });
     });
 
-    // -- Remix bar (native Dreamina flow) --
+    // -- Remix bar (Dreamina AI video flow) --
     const remixInput = shadow.getElementById('remix-input');
     const remixGo = shadow.getElementById('remix-go');
     remixGo.addEventListener('click', () => sendToDreamina(remixInput.value));
     remixInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); sendToDreamina(remixInput.value); }
       if (e.key === 'Escape') toggleRemixBar(false);
+    });
+
+    // Preset chips in the remix bar — quick prompts for Dreamina
+    shadow.querySelectorAll('[data-bar-preset]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const preset = el.getAttribute('data-bar-preset');
+        const prompts = {
+          cinematic: 'remake this as a cinematic movie trailer with dramatic lighting',
+          anime: 'turn this into an anime style animation',
+          retro: 'remake this as a 90s VHS tape with retro effects',
+          dreamy: 'turn this into a dreamy ethereal slow motion sequence',
+          dark: 'make this dark and moody like a thriller movie scene',
+          funny: 'make this absurd and funny, exaggerate everything',
+        };
+        remixInput.value = prompts[preset] || '';
+        remixInput.focus();
+      });
     });
 
     // Kick off Dreamina auto-fill (no-op if not on Dreamina)
@@ -452,6 +469,24 @@
   async function captureFrames(n = 4) {
     if (!currentVideoEl) return [];
     const v = currentVideoEl;
+
+    // If the video hasn't loaded any data, try to kickstart it (with timeout).
+    if (v.readyState < 2) {
+      v.muted = true;
+      try {
+        await Promise.race([
+          v.play(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('play timeout')), 2000)),
+        ]);
+      } catch (_) {}
+      if (v.readyState < 2) await new Promise((r) => setTimeout(r, 1200));
+    }
+
+    // If still not loaded, bail — the remix can run prompt-only.
+    if (v.readyState < 2) return [];
+
+    const vw = v.videoWidth || 512;
+    const vh = v.videoHeight || 910;
     const dur = isFinite(v.duration) ? v.duration : 5;
     const wasPaused = v.paused;
     const wasMuted = v.muted;
@@ -459,8 +494,8 @@
     v.muted = true;
 
     const w = 512;
-    const h = Math.round(512 * (v.videoHeight / Math.max(1, v.videoWidth)));
-    const canvas = new OffscreenCanvas(w, h);
+    const h = Math.round(w * (vh / Math.max(1, vw)));
+    const canvas = new OffscreenCanvas(w, h || 910);
     const ctx = canvas.getContext('2d');
     const frames = [];
 
@@ -468,29 +503,43 @@
       const t = (dur * (i + 0.5)) / n;
       try {
         await seek(v, t);
-        ctx.drawImage(v, 0, 0, w, h);
+        ctx.drawImage(v, 0, 0, w, h || 910);
         const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.78 });
         const b64 = await blobToBase64(blob);
         frames.push({ time: t, data: b64, mediaType: 'image/jpeg' });
       } catch (_) {}
     }
+
+    // Fallback: grab whatever is on screen right now
+    if (frames.length === 0) {
+      try {
+        ctx.drawImage(v, 0, 0, w, h || 910);
+        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.78 });
+        const b64 = await blobToBase64(blob);
+        frames.push({ time: v.currentTime, data: b64, mediaType: 'image/jpeg' });
+      } catch (_) {}
+    }
+
     try { await seek(v, t0); } catch (_) {}
     v.muted = wasMuted;
     if (!wasPaused) { try { await v.play(); } catch (_) {} }
     return frames;
   }
 
-  function seek(video, time) {
+  function seek(video, time, timeoutMs = 3000) {
     return new Promise((resolve, reject) => {
+      let timer;
       const onSeeked = () => { cleanup(); resolve(); };
       const onErr = (e) => { cleanup(); reject(e); };
       const cleanup = () => {
+        clearTimeout(timer);
         video.removeEventListener('seeked', onSeeked);
         video.removeEventListener('error', onErr);
       };
+      timer = setTimeout(() => { cleanup(); reject(new Error('seek timeout')); }, timeoutMs);
       video.addEventListener('seeked', onSeeked, { once: true });
       video.addEventListener('error', onErr, { once: true });
-      try { video.currentTime = time; } catch (e) { reject(e); }
+      try { video.currentTime = time; } catch (e) { cleanup(); reject(e); }
     });
   }
 
@@ -504,7 +553,46 @@
   }
 
   // ============================================================
-  // Run remix
+  // Run remix from the bottom bar — same Claude pipeline, but
+  // status goes to the bar and the bar closes on success.
+  // ============================================================
+
+  async function runRemixFromBar(prompt) {
+    if (!prompt || !prompt.trim()) return;
+    lastPrompt = prompt;
+    const barStatus = shadow.getElementById('bar-status');
+    const goBtn = shadow.getElementById('remix-go');
+    goBtn.disabled = true;
+    barStatus.textContent = '✦ Capturing frames…';
+
+    try {
+      const frames = await captureFrames(4);
+      barStatus.textContent = '✦ Asking Claude…';
+      const meta = {
+        url: location.href,
+        duration: currentVideoEl?.duration ?? null,
+        size: currentVideoEl ? `${currentVideoEl.videoWidth}x${currentVideoEl.videoHeight}` : null,
+      };
+      const resp = await chrome.runtime.sendMessage({ type: 'remix', prompt, frames, meta });
+      if (resp?.error) {
+        barStatus.textContent = '⚠️ ' + resp.error;
+        setTimeout(() => { barStatus.textContent = ''; }, 4000);
+        return;
+      }
+      currentRemix = resp.remix;
+      barStatus.textContent = '';
+      toggleRemixBar(false);
+      openViewer(resp.remix);
+    } catch (e) {
+      barStatus.textContent = '⚠️ ' + (e?.message || e);
+      setTimeout(() => { barStatus.textContent = ''; }, 4000);
+    } finally {
+      goBtn.disabled = false;
+    }
+  }
+
+  // ============================================================
+  // Run remix (panel flow — kept for preset buttons in side panel)
   // ============================================================
 
   async function runRemix(prompt) {
@@ -1704,7 +1792,7 @@
       opacity: 1; transform: translateX(-50%) translateY(0);
     }
 
-    /* ======= Native remix bar (Dreamina flow) ======= */
+    /* ======= Native remix bar (inline Claude flow) ======= */
     #remix-bar {
       position: fixed;
       bottom: 0; left: 0; right: 0;
@@ -1719,6 +1807,34 @@
       z-index: 50;
     }
     #remix-bar.open { transform: translateY(0); }
+    .bar-presets {
+      max-width: 560px;
+      margin: 0 auto 8px;
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .bar-presets::-webkit-scrollbar { display: none; }
+    .bar-chip {
+      flex-shrink: 0;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 5px 12px;
+      color: rgba(255,255,255,0.7);
+      font: 12px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s;
+      white-space: nowrap;
+    }
+    .bar-chip:hover {
+      background: rgba(255,0,80,0.15);
+      border-color: rgba(255,0,80,0.35);
+      color: #fff;
+    }
+    .bar-chip:active { transform: scale(0.95); }
     .bar-inner {
       max-width: 560px;
       margin: 0 auto;
@@ -1823,8 +1939,16 @@
       <section class="status" id="status"></section>
     </aside>
 
-    <!-- Native remix bar — TikTok-style prompt input -->
+    <!-- Native remix bar — TikTok-style prompt input + presets -->
     <div id="remix-bar">
+      <div class="bar-presets">
+        <button class="bar-chip" data-bar-preset="cinematic">🎬 Cinematic</button>
+        <button class="bar-chip" data-bar-preset="anime">✦ Anime</button>
+        <button class="bar-chip" data-bar-preset="retro">📼 Retro</button>
+        <button class="bar-chip" data-bar-preset="dreamy">✨ Dreamy</button>
+        <button class="bar-chip" data-bar-preset="dark">🖤 Dark</button>
+        <button class="bar-chip" data-bar-preset="funny">😂 Funny</button>
+      </div>
       <div class="bar-inner">
         <input id="remix-input" type="text" placeholder="Describe your remix…" autocomplete="off" spellcheck="false" />
         <button id="remix-go" aria-label="Generate">
