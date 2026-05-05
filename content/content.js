@@ -237,6 +237,13 @@
     shadow.querySelectorAll('[data-preset]').forEach((el) => {
       el.addEventListener('click', () => {
         const preset = el.getAttribute('data-preset');
+
+        // Dreamina opens the AI video generator in a new tab.
+        if (preset === 'dreamina') {
+          window.open('https://dreamina.capcut.com/ai-tool/generate?type=video', '_blank');
+          return;
+        }
+
         const prompts = {
           captions: 'Generate the catchiest possible caption + 5–6 timed text overlays that hook in the first second.',
           remix: 'Suggest a creative remix concept that flips the video — different angle, parody, or reaction. Caption + overlay script that lands the new angle.',
@@ -977,6 +984,15 @@
       transition: background .12s ease, border-color .12s ease;
     }
     .chip:hover { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.18); }
+    .chip-dreamina {
+      background: linear-gradient(135deg, rgba(0,206,209,0.15), rgba(138,43,226,0.15));
+      border-color: rgba(0,206,209,0.35);
+      width: 100%;
+    }
+    .chip-dreamina:hover {
+      background: linear-gradient(135deg, rgba(0,206,209,0.25), rgba(138,43,226,0.25));
+      border-color: rgba(0,206,209,0.55);
+    }
     .composer { padding: 10px 16px 12px; }
     #prompt-input {
       width: 100%; min-height: 70px; resize: vertical;
@@ -1378,6 +1394,7 @@
       </section>
 
       <section class="presets">
+        <button class="chip chip-dreamina" data-preset="dreamina">✦ Remix with Dreamina</button>
         <button class="chip" data-preset="captions">Captions</button>
         <button class="chip" data-preset="remix">Remix concept</button>
         <button class="chip" data-preset="edits">Edit ideas</button>
