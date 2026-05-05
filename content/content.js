@@ -123,11 +123,6 @@
     }
   }
 
-  // Defer the first tick so all const declarations (SHADOW_TEMPLATE,
-  // RAIL_SMILEY_SVG, etc.) defined later in this IIFE are initialised.
-  setInterval(tick, 800);
-  setTimeout(tick, 0);
-
   // ============================================================
   // Launcher
   // ============================================================
@@ -1689,4 +1684,12 @@
       <div id="music-toast"></div>
     </section>
   `;
+
+  // ============================================================
+  // Boot — placed at the very end of the IIFE so every const
+  // (SHADOW_TEMPLATE, RAIL_SMILEY_SVG, SHADOW_CSS, etc.) is
+  // guaranteed to be initialised before tick() ever runs.
+  // ============================================================
+  setInterval(tick, 800);
+  tick();
 })();
